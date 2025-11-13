@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 
 #image version
-VERSION = "2.0.2"
+VERSION = "2.0.3"
 
 import rclpy
 from rclpy.node import Node
@@ -69,7 +69,7 @@ class LineDetectionNode(Node):
         self.EMA_ALPHA = 0.2
 
         self.line_lost_time = None
-        self.line_lost_timeout = 0.5  # seconds
+        self.line_lost_timeout = 0.5  # second
 
         self.mode = 'LANE_FOLLOWING'  # or 'OVERTAKING'
         self.overtake_path = []
@@ -80,7 +80,6 @@ class LineDetectionNode(Node):
 
         self.engine_rpm = Float64()
         self.engine_rpm.data=0.0
-        self.stop=0
 
         self.get_logger().info('Line Detection Node Started')
 
@@ -104,7 +103,6 @@ class LineDetectionNode(Node):
     def image_callback(self, msg):
         frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
         frame_copy = frame.copy()
-        self.stop=0
         # print(f"motor_command_1_time: {self.motor_command_1_time}, go_straight_time: {self.go_straight_time},motor_command_2_time: {self.motor_command_2_time}")
 
         # Lane detection and/or overtaking path rendering
@@ -125,55 +123,57 @@ class LineDetectionNode(Node):
                 if int(cls_id) == 0:  #0 for cones
                     x1, y1, x2, y2 = box.astype(int)
 
-                    # Draw bounding box
+                    # Draw boundingbox
                     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
 
                     if y2 > height * self.obstacle_height:
-                        self.get_logger().info('obstacle detected')
-                        self.stop_motors()
                         detected_objects.append((x1, y1, x2, y2))
                         self.obstacle_detected.data=1
                         self.obstacle_pub.publish(self.obstacle_detected)
-                        self.stop=1
-                        time.sleep(2.0)
+                        #time.sleep(2.0)
 
-        # if self.mode == 'LANE_FOLLOWING' and detected_objects:
-        #     self.get_logger().info("Obstacle detected, switching to overtaking mode.")
-        #     self.mode = 'OVERTAKING'
+        if self.mode == 'LANE_FOLLOWING' and detected_objects:
+            self.get_logger().info("Obstacle detected, switching to overtaking mode.")
+            self.mode = 'OVERTAKING'
 
-        # if self.mode == 'OVERTAKING':
-        #     if self.overtake_index == 0:
-        #         self.send_motor_command_smooth(20, width // 2,0)
-        #         # time.sleep(0.001)
-        #         self.go_straight_command()
-        #         time.sleep(self.go_straight_time_left)
-        #         # self.send_motor_command_smooth(20, width // 2,1)
+        if self.mode == 'OVERTAKING':
+            if self.overtake_index == 0:
+                self.send_motor_command_smooth(20, width // 2,0)
+                # time.sleep(0.001)
+                self.go_straight_command()
+                time.sleep(self.go_straight_time_left)
+                # self.send_motor_command_smooth(20, width // 2,1)
                 
 
-        #     elif self.overtake_index == 1:
-        #         # self.send_motor_command(20, width // 2,1)
-        #         self.send_motor_command_smooth(20, width // 2,1)
-        #         self.go_straight_command()
-        #         time.sleep(self.go_straight_time_rigt)
+            elif self.overtake_index == 1:
+                # self.send_motor_command(20, width // 2,1)
+                self.send_motor_command_smooth(20, width // 2,1)
+                self.go_straight_command()
+                time.sleep(self.go_straight_time_right)
 
-        #     self.get_logger().info("-------------------------------------")   
-    
-
-        # *****************************Lane Following******************************
-        if self.stop == 0:
-            output_frame, midpoint, left_point, right_point = self.process_frame(frame)
-            current_time = time.time()
-
-            if midpoint and (left_point or right_point):
-                self.line_lost_time = None
-                self.send_motor_command(midpoint[0], width // 2,0)
+            self.get_logger().info("-------------------")
+            self.get_logger().info("Overtake complete. Resuming lane following.")
+            self.mode = 'LANE_FOLLOWING'
+            self.obstacle_detected.data = 0
+            if self.overtake_index == 1:
+                self.overtake_index = 0
             else:
-                if self.line_lost_time is None:
-                    self.line_lost_time = current_time
-                elif current_time - self.line_lost_time > self.line_lost_timeout:
-                    self.get_logger().info("Line lost. Stopping motors.")
-                    self.stop_motors()
-        
+                self.overtake_index = 1
+            return
+
+        # *****Lane Following******
+        output_frame, midpoint, left_point, right_point = self.process_frame(frame)
+        current_time = time.time()
+
+        if midpoint and (left_point or right_point):
+            self.line_lost_time = None
+            self.send_motor_command(midpoint[0], width // 2,0)
+        else:
+            if self.line_lost_time is None:
+                self.line_lost_time = current_time
+            elif current_time - self.line_lost_time > self.line_lost_timeout:
+                self.get_logger().info("Line lost. Stopping motors.")
+                self.stop_motors()
         if output_frame is not None:
             cv2.imshow('Line Detection Debug', output_frame)
             cv2.waitKey(1)
@@ -284,8 +284,7 @@ class LineDetectionNode(Node):
         #     (self.smoothed_midpoint[0] + width_half, driveway_bottom),
         #     (self.smoothed_midpoint[0] - width_half, driveway_bottom)
         # ], np.int32)
-        # cv2.fillPoly(overlay, [polygon], (0, 255, 0))
-        # vis = cv2.addWeighted(overlay, 0.2, vis, 0.7, 0)
+        # cv2.fillPoly(overlay, [polygon]
 
         white_mask_bgr = cv2.cvtColor(white_mask, cv2.COLOR_GRAY2BGR)
         edges_colored = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
@@ -350,12 +349,14 @@ class LineDetectionNode(Node):
         kp = self.kp
         base_speed = self.base_speed
         steering = kp * (error * 0.25)
-        # self.get_logger().info(f'Steering: {steering:.2f}')
+        # self.get_logger().info(f'Steering: {steering:.2f}')********************{steering:.2f}'){steering:.2f}')
+        # self.get_logger().info(f'Steering: {steering:.2f}')//////
 
         left_speed = base_speed + steering
         right_speed = base_speed - steering
 
         self.engine_rpm.data= (left_speed if left_speed>right_speed else right_speed)
+
         self.get_logger().info(f'engine_rpm, left_speed, right_speed: {self.engine_rpm.data}, {left_speed}, {right_speed}')
 
         msg = MotorsState()
